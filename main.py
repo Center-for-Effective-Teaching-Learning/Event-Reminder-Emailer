@@ -44,6 +44,8 @@ def get_attendees(api_key, event_id):
     return response.json().get('attendees', [])
 
 
+from datetime import datetime
+
 # Function to send email reminder
 def send_email_reminder(email, event_name, start_time, access_link, attendee_name):
     message = Mail(
@@ -70,7 +72,12 @@ def send_email_reminder(email, event_name, start_time, access_link, attendee_nam
     try:
         sg = SendGridAPIClient(sendgrid_api_key)
         response = sg.send(message)
-        print(f"Email sent to {email}! Status code: {response.status_code}")
+
+        # Get the current date and time
+        now = datetime.now()
+        formatted_time = now.strftime("%-m/%-d/%y at %-I:%M%p")  # e.g., "2/19/25 at 8:00am"
+        
+        print(f"Email sent to {email} on {formatted_time}! Status code: {response.status_code}")
     except Exception as e:
         print(f"Error sending email to {email}: {e}")
 
