@@ -57,7 +57,7 @@ def send_email_reminder(email, event_name, start_time, access_link, attendee_nam
             f'<p>Good morning {attendee_name},</p>'
             f'<p>This is a reminder that you are registered for <strong><a href=\"{access_link}\">{event_name}</a></strong> '
             f'happening today (<strong>{start_time}</strong>).</p>'
-            f'</p><p>If this is an online event, join the zoom here: https://calstatela.zoom.us/s/81813600499</p>'
+            f'</p><p>If this is an online event, join the zoom here: https://calstatela.zoom.us/j/81813600499</p>'
             f'</p><p>We look forward to seeing you there!</p>'
             f'<p>Best regards,</p>'
             f'<p>CETL</p>'
@@ -92,7 +92,7 @@ def format_start_time(start_time):
 def main():
     events = get_events(eventbrite_api_key, organization_id)
     if not events:
-        print("No events found for today.")
+        print(f"No events found for {datetime.today().strftime('%B %d, %Y')}.")
         return
 
     print("Events happening today:")
