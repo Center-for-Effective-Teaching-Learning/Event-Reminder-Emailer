@@ -10,7 +10,7 @@ from sendgrid.helpers.mail import Mail, TrackingSettings, ClickTracking
 
 # Load configuration from config.ini
 config = configparser.ConfigParser()
-config.read("/home/bitnami/scripts/config.ini")
+config.read("/home/ubuntu/scripts/config.ini")
 
 # Eventbrite configuration
 eventbrite_api_key = config["auth"]["eventbrite"]
@@ -19,6 +19,7 @@ organization_id = config["auth"]["eventbrite_id"]
 # SendGrid configuration
 sendgrid_api_key = config["auth"]["sendgrid_api_key"]
 sender_email = "cetltech@calstatela.edu"
+summary_recipient = "jhenlin2@calstatela.edu"
 
 # Email settings
 image_url = "https://fdms.online/images/cetl_banner.png"
@@ -190,21 +191,151 @@ def send_email_reminder(
             f"Email sent to {email} on {formatted_time}! "
             f"Status code: {response.status_code}"
         )
+        return True, None
 
     except Exception as error:
         print(f"Error sending email to {email}: {error}")
+        return False, str(error)
+
+
+def build_summary_html(report):
+    """Render the admin digest for one reminder run."""
+    events_error = report.get("events_error")
+
+    if events_error:
+        safe_error = escape(events_error)
+        return (
+            f"<p>Unable to retrieve Eventbrite events: "
+            f"{safe_error}</p>"
+        )
+
+    events = report.get("events", [])
+
+    if not events:
+        return "<p>No events were scheduled for today.</p>"
+
+    date = escape(report["date"])
+    sections = [f"<p>Event reminder summary for {date}.</p>"]
+    sent = 0
+    failed = 0
+    skipped = 0
+
+    for event in events:
+        safe_name = escape(event["name"])
+        safe_start = escape(event["start_time"])
+        location = "Online" if event["online"] else "In person"
+
+        sections.append(f"<h2>{safe_name}</h2>")
+        sections.append(f"<p>{safe_start}<br>{location}</p>")
+
+        fetch_error = event.get("fetch_error")
+
+        if fetch_error:
+            sections.append(
+                f"<p>Unable to retrieve attendees: "
+                f"{escape(fetch_error)}</p>"
+            )
+            continue
+
+        attendees = event.get("attendees", [])
+
+        if not attendees:
+            sections.append("<p>No registered users.</p>")
+            continue
+
+        items = []
+
+        for attendee in attendees:
+            name = escape(attendee["name"])
+            email = attendee.get("email") or ""
+            status = attendee["status"]
+
+            if status == "sent":
+                sent += 1
+                result = "Sent"
+            elif status == "failed":
+                failed += 1
+                error = attendee.get("error") or "Unknown error"
+                result = f"Failed: {escape(error)}"
+            else:
+                skipped += 1
+                result = "Missing email"
+
+            if email:
+                contact = f"{name} ({escape(email)})"
+            else:
+                contact = name
+
+            items.append(f"<li>{contact} - {result}</li>")
+
+        sections.append("<ul>" + "".join(items) + "</ul>")
+
+    sections.append(
+        f"<p><strong>Totals:</strong> {sent} sent, "
+        f"{failed} failed, {skipped} skipped.</p>"
+    )
+
+    return "".join(sections)
+
+
+def send_summary_email(report):
+    """Send one digest of today's reminder run."""
+    html_content = build_summary_html(report)
+
+    message = Mail(
+        from_email=sender_email,
+        to_emails=summary_recipient,
+        subject=f"Event reminder summary for {report['date']}",
+        html_content=html_content
+    )
+
+    tracking_settings = TrackingSettings()
+    tracking_settings.click_tracking = ClickTracking(
+        enable=False,
+        enable_text=False
+    )
+    message.tracking_settings = tracking_settings
+
+    try:
+        sendgrid = SendGridAPIClient(sendgrid_api_key)
+        response = sendgrid.send(message)
+
+        now = datetime.now()
+        formatted_time = now.strftime("%-m/%-d/%y at %-I:%M%p")
+
+        print(
+            f"Summary email sent to {summary_recipient} "
+            f"on {formatted_time}! "
+            f"Status code: {response.status_code}"
+        )
+
+    except Exception as error:
+        print(
+            f"Error sending summary email to "
+            f"{summary_recipient}: {error}"
+        )
 
 
 def main():
+    summary_date = datetime.now().strftime("%B %-d, %Y")
+    report = {
+        "date": summary_date,
+        "events_error": None,
+        "events": [],
+    }
+
     try:
         events = get_events(eventbrite_api_key, organization_id)
     except requests.RequestException as error:
         print(f"Unable to retrieve Eventbrite events: {error}")
+        report["events_error"] = str(error)
+        send_summary_email(report)
         return
 
     if not events:
         today = datetime.today().strftime("%B %d, %Y")
         print(f"No events found for {today}.")
+        send_summary_email(report)
         return
 
     print("Events happening today:")
@@ -219,6 +350,14 @@ def main():
         is_online_event = event.get("online_event", False)
         access_link = event.get("url", "") if is_online_event else ""
 
+        event_report = {
+            "name": event_name,
+            "start_time": formatted_start_time,
+            "online": is_online_event,
+            "fetch_error": None,
+            "attendees": [],
+        }
+
         print(f"\nEvent Name: {event_name}")
         print(f"Start Date: {formatted_start_time}")
 
@@ -232,10 +371,13 @@ def main():
                 f"Unable to retrieve attendees for "
                 f"{event_name}: {error}"
             )
+            event_report["fetch_error"] = str(error)
+            report["events"].append(event_report)
             continue
 
         if not attendees:
             print("No registered users.")
+            report["events"].append(event_report)
             continue
 
         print("Registered Users:")
@@ -253,11 +395,17 @@ def main():
                     f"Failed to send email: Missing email "
                     f"for attendee {attendee_name}"
                 )
+                event_report["attendees"].append({
+                    "name": attendee_name,
+                    "email": "",
+                    "status": "missing_email",
+                    "error": None,
+                })
                 continue
 
             all_emails.append(email)
 
-            send_email_reminder(
+            ok, error = send_email_reminder(
                 email=email,
                 event_name=event_name,
                 start_time=formatted_start_time,
@@ -265,8 +413,17 @@ def main():
                 attendee_name=attendee_name,
                 is_online_event=is_online_event
             )
+            event_report["attendees"].append({
+                "name": attendee_name,
+                "email": email,
+                "status": "sent" if ok else "failed",
+                "error": None if ok else error,
+            })
+
+        report["events"].append(event_report)
 
     print(f"\nTotal count of emails: {len(all_emails)}")
+    send_summary_email(report)
 
 
 if __name__ == "__main__":
